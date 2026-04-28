@@ -1,0 +1,4 @@
+# Ignore runtime signal and alert files; keep the directory via .gitkeep
+EMERGENCY_STOP.signal
+SAFE_MODE_STATE.json
+ALERTS.jsonl
