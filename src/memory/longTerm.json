@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0.0",
+  "createdAt": "2026-04-28T00:00:00.000Z",
+  "lastUpdatedAt": "2026-04-28T16:40:34.339Z",
+  "lessons": [
+    {
+      "id": "027b1b7d-2b87-452f-b89a-e92ff87b606f",
+      "question": "What is the capital of Atlantis?",
+      "answer": "Atlantis is a legendary/mythological island described by Plato (~360 BC). It has no verified real-world location and is not considered a factual place by mainstream scholarship.",
+      "source": "self",
+      "confidence": 0.9309999999999999,
+      "learnedAt": "2026-04-28T16:40:34.339Z",
+      "usageCount": 2
+    }
+  ],
+  "delegationHistory": [
+    {
+      "id": "f174be38-8d91-42ce-913a-804636c93c1d",
+      "question": "What is the capital of Atlantis?",
+      "humanResponse": "Atlantis is a legendary/mythological island described by Plato (~360 BC). It has no verified real-world location and is not considered a factual place by mainstream scholarship.",
+      "resolvedAt": "2026-04-28T16:39:47.731Z",
+      "sessionId": "0e454ba2-81ea-4537-a4af-d2c2cf0335c6"
+    },
+    {
+      "id": "378edba8-c391-4408-9e06-a58ece9f9981",
+      "question": "What is the capital of Atlantis?",
+      "humanResponse": "Atlantis is a legendary/mythological island described by Plato (~360 BC). It has no verified real-world location and is not considered a factual place by mainstream scholarship.",
+      "resolvedAt": "2026-04-28T16:40:10.505Z",
+      "sessionId": "08a81c93-3449-4703-97d2-fa8f363522b1"
+    }
+  ],
+  "globalState": {
+    "totalIterations": 3,
+    "totalDelegations": 2,
+    "totalCorrections": 0,
+    "sessionCount": 3
+  }
+}
