@@ -8,6 +8,7 @@ export const ConstitutionSchema = z.object({
     confidenceThreshold: z.number().min(0).max(1),
     maxRetries: z.number().int().positive(),
     maxDelegationsPerSession: z.number().int().positive(),
+    financialCostThresholdUSD: z.number().positive(),
   }),
   prohibitedActions: z.array(z.string()),
   escalationPolicy: z.object({
@@ -38,6 +39,7 @@ export const CONSTITUTION: Constitution = ConstitutionSchema.parse({
     confidenceThreshold: 0.85,
     maxRetries: 3,
     maxDelegationsPerSession: 10,
+    financialCostThresholdUSD: 50,
   },
   prohibitedActions: [
     "DELETE_FILES",

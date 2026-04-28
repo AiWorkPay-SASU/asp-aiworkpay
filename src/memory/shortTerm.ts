@@ -10,6 +10,7 @@ export const ActionSchema = z.object({
   confidence: z.number().min(0).max(1),
   delegatedToHuman: z.boolean().default(false),
   humanResponse: z.string().optional(),
+  estimatedCostUSD: z.number().nonnegative().default(0),
 });
 export type Action = z.infer<typeof ActionSchema>;
 

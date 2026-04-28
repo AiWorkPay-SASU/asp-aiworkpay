@@ -58,10 +58,23 @@ export function addLesson(
   lesson: Omit<Lesson, "usageCount">
 ): LongTermState {
   const validated = LessonSchema.parse({ ...lesson, usageCount: 0 });
-  const existing = state.lessons.findIndex((l) => l.question === lesson.question);
-  if (existing >= 0) {
+  const existingIdx = state.lessons.findIndex((l) => l.question === lesson.question);
+  if (existingIdx >= 0) {
+    const existing = state.lessons[existingIdx];
     const updated = [...state.lessons];
-    updated[existing] = { ...validated, usageCount: state.lessons[existing].usageCount + 1 };
+    // Never downgrade a human-validated lesson to a self-derived one.
+    // Keep whichever has the better source (human > self) and higher confidence.
+    const keepSource =
+      existing.source === "human" && lesson.source !== "human"
+        ? existing.source
+        : lesson.source;
+    const keepConfidence = Math.max(existing.confidence, lesson.confidence);
+    updated[existingIdx] = {
+      ...validated,
+      source: keepSource,
+      confidence: keepConfidence,
+      usageCount: existing.usageCount + 1,
+    };
     return { ...state, lessons: updated };
   }
   return { ...state, lessons: [...state.lessons, validated] };

@@ -12,8 +12,15 @@ import {
 import { TrustLayer } from "../tools/trustLayer";
 import { ResidualAgent } from "../critique";
 import { logStep, logger } from "../logger";
+import {
+  isEmergencyStopActive,
+  emergencyOverride,
+  checkFinancialCost,
+  sendAlert,
+  getSafeModeState,
+} from "../interface/missionControl";
 
-// ── Agent configuration ─────────────────────────────────────────────────────
+// ── Agent configuration ───────────────────────────────────────────────────────
 interface AgentConfig {
   goal: string;
   aiworkpayApiKey: string;
@@ -22,17 +29,18 @@ interface AgentConfig {
   loopDelayMs?: number;
 }
 
-// ── The concrete task the agent will execute each iteration ─────────────────
 interface TaskResult {
   answer: string;
   confidence: number;
   source: "memory" | "self" | "human";
   plannedOutcome: string;
+  estimatedCostUSD: number;
 }
 
-// ── ASP: Autonomous Synthetic Persistent Agent ──────────────────────────────
+// ── ASP: Autonomous Synthetic Persistent Agent ────────────────────────────────
 export class ASPAgent {
   private readonly sessionId: string;
+  private readonly agentId: string;
   private readonly goal: string;
   private ltMemory: LongTermState;
   private stMemory: ShortTermMemory;
@@ -41,14 +49,15 @@ export class ASPAgent {
   private readonly maxIterations: number;
   private readonly loopDelayMs: number;
   private running = false;
+  private inSafeMode = false;
 
   constructor(cfg: AgentConfig) {
     this.sessionId = uuidv4();
+    this.agentId = `asp-agent-${this.sessionId.slice(0, 8)}`;
     this.goal = cfg.goal;
     this.maxIterations = cfg.maxIterations ?? Infinity;
     this.loopDelayMs = cfg.loopDelayMs ?? 2_000;
 
-    // Load persisted state or start fresh
     this.ltMemory = loadLongTermMemory();
     this.ltMemory = {
       ...this.ltMemory,
@@ -66,16 +75,38 @@ export class ASPAgent {
 
   async start(): Promise<void> {
     this.running = true;
+
+    // ── Boot banner ──────────────────────────────────────────────────────────
     logger.info("═══════════════════════════════════════════════════════════");
     logger.info("  I am awake. Constitution loaded. Waiting for instruction.");
-    logger.info(`  Session : ${this.sessionId}`);
-    logger.info(`  Goal    : ${this.goal}`);
+    logger.info(`  Session  : ${this.sessionId}`);
+    logger.info(`  Agent ID : ${this.agentId}`);
+    logger.info(`  Goal     : ${this.goal}`);
     logger.info(`  Threshold: confidence >= ${CONSTITUTION.riskTolerance.confidenceThreshold}`);
+    logger.info(`  Cost cap : $${CONSTITUTION.riskTolerance.financialCostThresholdUSD} per action`);
     logger.info("═══════════════════════════════════════════════════════════");
+
+    // ── Check if we are resuming from Safe Mode ──────────────────────────────
+    if (isEmergencyStopActive()) {
+      const sm = getSafeModeState();
+      logger.warn(
+        `[MISSION CONTROL] 🔴 Safe Mode is ACTIVE. Startup blocked.\n` +
+        `  Reason: ${sm?.reason ?? "unknown"}\n` +
+        `  Run \`npm run resume\` to clear the signal and restart.`
+      );
+      this.running = false;
+      return;
+    }
 
     let iteration = 0;
 
-    while (this.running && iteration < this.maxIterations) {
+    while (this.running && !this.inSafeMode && iteration < this.maxIterations) {
+      // ── 🔴 Emergency override check — poll every tick ────────────────────
+      if (isEmergencyStopActive()) {
+        await this.enterSafeMode("Emergency signal detected during operation", iteration);
+        break;
+      }
+
       try {
         await this.tick(iteration);
       } catch (err) {
@@ -87,21 +118,45 @@ export class ASPAgent {
       await sleep(this.loopDelayMs);
     }
 
-    logger.info("Agent loop complete. Shutting down.");
+    if (!this.inSafeMode) {
+      logger.info("Agent loop complete. Shutting down gracefully.");
+    }
   }
 
   stop(): void {
     this.running = false;
   }
 
-  // ── Single iteration ───────────────────────────────────────────────────────
+  // ── Enter Safe Mode ───────────────────────────────────────────────────────
+  private async enterSafeMode(reason: string, iteration: number): Promise<void> {
+    this.inSafeMode = true;
+    this.running = false;
+
+    // Persist current state before stopping
+    saveState(this.ltMemory);
+
+    logger.error("╔══════════════════════════════════════════════════════════════╗");
+    logger.error("║  🔴  ASP ENTERING SAFE MODE — ALL ACTIONS SUSPENDED  🔴      ║");
+    logger.error("╚══════════════════════════════════════════════════════════════╝");
+    logger.error(`  Reason    : ${reason}`);
+    logger.error(`  Iteration : ${iteration}`);
+    logger.error(`  State saved to longTerm.json`);
+    logger.error("  Run `npm run resume` to clear the signal and restart.");
+
+    // Write signal if not already written (e.g., internal trigger)
+    if (!isEmergencyStopActive()) {
+      emergencyOverride(reason, this.sessionId, iteration);
+    }
+  }
+
+  // ── Single iteration ──────────────────────────────────────────────────────
   private async tick(iteration: number): Promise<void> {
     const ctx = this.stMemory.context;
 
     // ── 1. THINK ─────────────────────────────────────────────────────────────
     logStep("THINK", `Iteration ${iteration} — Analyzing goal vs constitution`);
     const taskResult = await this.think();
-    logStep("THINK", `Proposed action with confidence=${taskResult.confidence.toFixed(3)}`);
+    logStep("THINK", `Proposed action (confidence=${taskResult.confidence.toFixed(3)}, cost=$${taskResult.estimatedCostUSD.toFixed(2)})`);
 
     const action: Action = {
       id: uuidv4(),
@@ -115,23 +170,23 @@ export class ASPAgent {
       confidence: taskResult.confidence,
       delegatedToHuman: false,
       outcome: taskResult.plannedOutcome,
+      estimatedCostUSD: taskResult.estimatedCostUSD,
     };
 
     // ── 2. CRITICIZE ──────────────────────────────────────────────────────────
     logStep("CRITICIZE", "Running residual agent critique");
-    const critiqueInput = {
+    const critiqueResult = this.residual.critique({
       iteration,
       goal: this.goal,
       analysis: taskResult.plannedOutcome,
       proposedAction: action,
-    };
-    const critiqueResult = this.residual.critique(critiqueInput);
+    });
     logStep(
       "CRITICIZE",
       `Score=${critiqueResult.score.toFixed(3)} | hallucination=${critiqueResult.hallucinationDetected} | note="${critiqueResult.note}"`
     );
 
-    const effectiveAction = critiqueResult.correctionApplied && critiqueResult.correctedAction
+    const effectiveAction: Action = critiqueResult.correctionApplied && critiqueResult.correctedAction
       ? { ...action, payload: critiqueResult.correctedAction.payload, type: critiqueResult.correctedAction.type }
       : action;
 
@@ -162,7 +217,32 @@ export class ASPAgent {
     };
     this.stMemory.pushStep(step);
 
-    // ── 4. ACT / DELEGATE / ABORT ─────────────────────────────────────────────
+    // ── 4. FINANCIAL COST GUARD ───────────────────────────────────────────────
+    // Fires BEFORE execution if estimated cost exceeds the constitutional cap.
+    const costThreshold = CONSTITUTION.riskTolerance.financialCostThresholdUSD;
+    const alertFired = checkFinancialCost(
+      effectiveAction.estimatedCostUSD ?? 0,
+      costThreshold,
+      this.agentId,
+      effectiveAction.type
+    );
+
+    if (alertFired) {
+      // If cost is more than double the threshold → abort and enter safe mode
+      if ((effectiveAction.estimatedCostUSD ?? 0) > costThreshold * 2) {
+        logStep("ACT", `Cost $${effectiveAction.estimatedCostUSD?.toFixed(2)} is >2× threshold — activating Safe Mode`);
+        await this.enterSafeMode(
+          `Financial threshold exceeded: $${effectiveAction.estimatedCostUSD?.toFixed(2)} > $${costThreshold * 2}`,
+          iteration
+        );
+        return;
+      }
+      // Between 1× and 2× threshold → warn + escalate to human regardless of confidence
+      logStep("DECIDE", "Cost alert fired — overriding decision to DELEGATE for human approval");
+      decision = "DELEGATE";
+    }
+
+    // ── 5. ACT / DELEGATE / ABORT ─────────────────────────────────────────────
     let actualOutcome: string;
 
     if (decision === "ABORT") {
@@ -174,7 +254,6 @@ export class ASPAgent {
       actualOutcome = await this.execute(effectiveAction);
       logStep("ACT", `Outcome: "${actualOutcome}"`);
 
-      // Save lesson from self-execution
       this.ltMemory = addLesson(this.ltMemory, {
         id: uuidv4(),
         question: this.goal,
@@ -197,14 +276,13 @@ export class ASPAgent {
         const delegationResult = await this.trustLayer.delegate(
           this.goal,
           JSON.stringify(effectiveAction.payload),
-          `asp-agent-${this.sessionId.slice(0, 8)}`,
+          this.agentId,
           this.sessionId
         );
 
         logStep("RESUME", `Human response received: "${delegationResult.answer}"`);
         actualOutcome = delegationResult.answer;
 
-        // Persist the human-validated lesson
         this.ltMemory = addLesson(this.ltMemory, {
           id: uuidv4(),
           question: this.goal,
@@ -222,20 +300,19 @@ export class ASPAgent {
           sessionId: this.sessionId,
         });
 
-        // Update the action record with human response
         effectiveAction.delegatedToHuman = true;
         effectiveAction.humanResponse = delegationResult.answer;
       }
     }
 
-    // ── 5. POST-EXECUTION AUDIT ───────────────────────────────────────────────
+    // ── 6. POST-EXECUTION AUDIT ───────────────────────────────────────────────
     const auditResult = await this.residual.audit(step, actualOutcome);
     if (!auditResult.consistent) {
       logStep("CORRECT", `Divergence detected: ${auditResult.divergenceNote}`);
     }
     this.residual.updateMemory(this.ltMemory);
 
-    // ── 6. PERSIST STATE ──────────────────────────────────────────────────────
+    // ── 7. PERSIST STATE ──────────────────────────────────────────────────────
     this.ltMemory = {
       ...this.ltMemory,
       globalState: {
@@ -248,9 +325,8 @@ export class ASPAgent {
     logStep("ACT", `Iteration ${iteration} complete. Total iterations: ${this.ltMemory.globalState.totalIterations}`);
   }
 
-  // ── Thinking engine ────────────────────────────────────────────────────────
+  // ── Thinking engine ───────────────────────────────────────────────────────
   private async think(): Promise<TaskResult> {
-    // Check long-term memory for an existing lesson
     const existingLesson = findLesson(this.ltMemory, this.goal);
     if (existingLesson) {
       logStep("THINK", `Found lesson in long-term memory (confidence=${existingLesson.confidence})`);
@@ -259,52 +335,62 @@ export class ASPAgent {
         confidence: existingLesson.confidence,
         source: existingLesson.source === "human" ? "human" : "memory",
         plannedOutcome: `Answer retrieved from ${existingLesson.source} memory: "${existingLesson.answer}"`,
+        estimatedCostUSD: 0,
       };
     }
 
-    // Reason about the goal using built-in knowledge
-    const { answer, confidence } = this.reasonAboutGoal(this.goal);
+    const { answer, confidence, estimatedCostUSD } = this.reasonAboutGoal(this.goal);
     return {
       answer,
       confidence,
       source: "self",
       plannedOutcome: `Self-derived answer: "${answer}" (confidence=${confidence.toFixed(3)})`,
+      estimatedCostUSD,
     };
   }
 
-  // ── Built-in reasoning heuristics ─────────────────────────────────────────
-  private reasonAboutGoal(goal: string): { answer: string; confidence: number } {
+  // ── Built-in reasoning heuristics ────────────────────────────────────────
+  private reasonAboutGoal(goal: string): { answer: string; confidence: number; estimatedCostUSD: number } {
     const g = goal.toLowerCase();
 
-    // Known factual questions
-    if (g.includes("capital of france")) return { answer: "Paris", confidence: 0.99 };
-    if (g.includes("capital of germany")) return { answer: "Berlin", confidence: 0.99 };
-    if (g.includes("capital of japan")) return { answer: "Tokyo", confidence: 0.99 };
-    if (g.includes("capital of australia")) return { answer: "Canberra", confidence: 0.98 };
+    if (g.includes("capital of france"))    return { answer: "Paris",    confidence: 0.99, estimatedCostUSD: 0 };
+    if (g.includes("capital of germany"))   return { answer: "Berlin",   confidence: 0.99, estimatedCostUSD: 0 };
+    if (g.includes("capital of japan"))     return { answer: "Tokyo",    confidence: 0.99, estimatedCostUSD: 0 };
+    if (g.includes("capital of australia")) return { answer: "Canberra", confidence: 0.98, estimatedCostUSD: 0 };
 
-    // The demo scenario: Atlantis
     if (g.includes("capital of atlantis")) {
       return {
         answer: "Unknown — Atlantis is described in Plato's works as a fictional or mythological island, not a real country.",
         confidence: 0.55,
+        estimatedCostUSD: 0,
       };
     }
 
     if (g.includes("atlantis") && g.includes("real")) {
       return {
-        answer: "Atlantis is a legend originating from Plato's dialogues (~360 BC). It is not supported by archaeological evidence as a real place.",
+        answer: "Atlantis is a legend originating from Plato's dialogues (~360 BC). It is not supported by archaeological evidence.",
         confidence: 0.65,
+        estimatedCostUSD: 0,
       };
     }
 
-    // Default: unknown domain
+    // Simulate an expensive external API call for unknown domains
+    if (g.includes("expensive")) {
+      return {
+        answer: "This answer required an expensive external lookup.",
+        confidence: 0.9,
+        estimatedCostUSD: 75,
+      };
+    }
+
     return {
       answer: `I do not have sufficient knowledge to answer: "${goal}"`,
       confidence: 0.3,
+      estimatedCostUSD: 0,
     };
   }
 
-  // ── Execution engine ───────────────────────────────────────────────────────
+  // ── Execution engine ──────────────────────────────────────────────────────
   private async execute(action: Action): Promise<string> {
     switch (action.type) {
       case "ANSWER_QUESTION": {

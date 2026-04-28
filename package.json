@@ -7,6 +7,9 @@
     "build": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
     "dev": "ts-node index.ts",
+    "summary": "ts-node src/interface/missionControl.ts summary",
+    "stop": "ts-node src/interface/missionControl.ts stop",
+    "resume": "ts-node src/interface/missionControl.ts resume",
     "test": "echo \"No tests configured\" && exit 0"
   },
   "repository": {
