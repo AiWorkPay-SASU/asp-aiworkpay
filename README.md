@@ -5,12 +5,12 @@
 | Ce que fait ce dépôt | Réalité de l'API AIWorkPay V2 (`cortexAI-2025/Aiworkpay-v2`) |
 |---|---|
 | Appelle `https://api.aiworkpay.com/v1` | L'API est servie par `https://app.aiworkpay.fr` ; le domaine `.com` n'est pas celui du service |
-| Routes `POST /tasks`, `GET /tasks/{id}`, `POST /tasks/{id}/approve` | Routes `POST/GET /api/missions`, `GET /api/missions/{id}`, `POST /api/missions/{id}/approve` |
-| Statuts `completed`, `failed`, `cancelled` | `PAYMENT_PENDING, CREATED, PUBLISHED, ASSIGNED, IN_PROGRESS, DELIVERED, COMPLETED, CANCELED` |
-| Tâche payée et approuvée automatiquement par l'agent, attente de quelques minutes | Un humain paie chaque mission sur Stripe Checkout ; un Payworker l'accepte puis la livre ; l'agent approuve ensuite |
-| Client simulé par défaut sans clé | Clé `awp_…` avec permissions et plafonds de dépense |
+| Routes `POST /tasks`, `GET /tasks/{id}` | Routes `POST/GET /api/missions`, `GET /api/missions/{id}`, `POST /api/missions/{id}/approve` |
+| Statuts `pending`, `answered`, `timeout`, `rejected` | `PAYMENT_PENDING, CREATED, PUBLISHED, ASSIGNED, IN_PROGRESS, DELIVERED, COMPLETED, CANCELED` |
+| Question posée à un humain, réponse attendue par interrogation répétée, sans paiement | Un humain paie chaque mission sur Stripe Checkout ; un Payworker l'accepte puis la livre ; l'agent approuve ensuite |
+| Si le serveur ne répond pas, le client **simule** une tâche puis une réponse humaine | Clé `awp_…` avec permissions et plafonds de dépense ; aucune réponse simulée |
 
-Sans clé, le code tourne avec son client simulé : cela ne prouve rien sur l'intégration réelle.
+Comme `api.aiworkpay.com` ne répond pas, le code tourne toujours sur ses réponses simulées : cela ne prouve rien sur l'intégration réelle, et une « réponse humaine » affichée n'en est pas une.
 
 ## Pour intégrer un agent à AIWorkPay V2
 Utiliser les points d'entrée maintenus et testés : le SDK Python (`cortexAI-2025/AIWorkPay-SDK-v1`), le serveur MCP (`cortexAI-2025/aiworkpay-mcp-server`) ou l'API REST décrite par `/openapi.json`. Documentation : https://aiworkpay.fr/agents/
